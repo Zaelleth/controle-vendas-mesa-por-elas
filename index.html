@@ -140,6 +140,7 @@
   .pill{padding:3px 9px;border-radius:20px;font-size:11px;display:inline-block;}
   .pill.pix{background:rgba(111,168,154,.15);color:var(--teal);}
   .pill.cartao{background:rgba(203,168,105,.15);color:var(--gold);}
+  .pill.misto{background:linear-gradient(90deg, rgba(111,168,154,.18), rgba(203,168,105,.18));color:var(--rose);}
   .del-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:15px;}
   .del-btn:hover{color:var(--danger);}
   .edit-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;}
@@ -362,17 +363,50 @@
         <input type="email" id="fEmail" placeholder="cliente@email.com">
       </div>
       <div class="field">
-        <label>Valor da venda (R$)</label>
-        <input type="number" id="fAmount" placeholder="0,00" step="0.01" min="0">
+        <label class="split-toggle-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:500;color:var(--ivory);">
+          <input type="checkbox" id="fSplitPayment" style="width:16px;height:16px;accent-color:var(--gold);">
+          Dividir pagamento entre Pix e Cartão
+        </label>
       </div>
-      <div class="field">
-        <label>Forma de pagamento</label>
-        <div class="choice-group" id="paymentGroup">
-          <div class="choice-btn" data-val="pix">Pix</div>
-          <div class="choice-btn" data-val="debito">Débito</div>
-          <div class="choice-btn" data-val="credito">Crédito</div>
+
+      <div id="singlePaymentBlock">
+        <div class="field">
+          <label>Valor da venda (R$)</label>
+          <input type="number" id="fAmount" placeholder="0,00" step="0.01" min="0">
+        </div>
+        <div class="field">
+          <label>Forma de pagamento</label>
+          <div class="choice-group" id="paymentGroup">
+            <div class="choice-btn" data-val="pix">Pix</div>
+            <div class="choice-btn" data-val="debito">Débito</div>
+            <div class="choice-btn" data-val="credito">Crédito</div>
+          </div>
         </div>
       </div>
+
+      <div id="splitPaymentBlock" style="display:none;">
+        <div class="row2">
+          <div class="field">
+            <label>Valor no Pix (R$)</label>
+            <input type="number" id="fPixAmount" placeholder="0,00" step="0.01" min="0">
+          </div>
+          <div class="field">
+            <label>Valor no Cartão (R$)</label>
+            <input type="number" id="fCardAmount" placeholder="0,00" step="0.01" min="0">
+          </div>
+        </div>
+        <div class="field">
+          <label>Tipo do cartão (parte cartão)</label>
+          <div class="choice-group" id="cardTypeGroup">
+            <div class="choice-btn" data-val="debito">Débito</div>
+            <div class="choice-btn" data-val="credito">Crédito</div>
+          </div>
+        </div>
+        <div class="field" style="font-size:13px;color:var(--muted);">
+          Total da venda: <strong id="splitTotalLabel" style="color:var(--ivory);">R$ 0,00</strong>
+        </div>
+      </div>
+
       <div class="field">
         <label>Vendedora</label>
         <div class="choice-group" id="sellerGroup">
@@ -664,6 +698,26 @@ function filteredSales(){
   return sales.filter(s=>dateOfSale(s)===currentFilterDate);
 }
 
+// ---------- Helpers de pagamento (cobrem pagamento único e dividido) ----------
+function pixPortion(s){
+  if(typeof s.pixAmount === 'number') return s.pixAmount;
+  return s.payment === 'pix' ? s.amount : 0; // vendas antigas, sem os campos novos
+}
+function cardPortion(s){
+  if(typeof s.cardAmount === 'number') return s.cardAmount;
+  return s.payment === 'pix' ? 0 : s.amount; // vendas antigas, sem os campos novos
+}
+function paymentLabel(s){
+  const cardLabel = (t)=> t==='credito' ? 'Crédito' : 'Débito';
+  if(s.payment === 'misto') return `Pix + ${cardLabel(s.cardType)}`;
+  if(s.payment === 'pix') return 'Pix';
+  return cardLabel(s.payment);
+}
+function paymentPillClass(s){
+  if(s.payment === 'misto') return 'misto';
+  return s.payment === 'pix' ? 'pix' : 'cartao';
+}
+
 // ---------- CSV export ----------
 function csvEscape(val){
   const str = String(val ?? '');
@@ -678,8 +732,7 @@ function exportCSV(){
     alert('Não há vendas para exportar nesse período.');
     return;
   }
-  const headers = ['Nome completo','Telefone','E-mail','CPF','Valor (R$)','Forma de pagamento','Vendedora','Data','Hora'];
-  const paymentLabels = {pix:'Pix', debito:'Débito', credito:'Crédito'};
+  const headers = ['Nome completo','Telefone','E-mail','CPF','Valor total (R$)','Valor Pix (R$)','Valor Cartão (R$)','Forma de pagamento','Vendedora','Data','Hora'];
   const rows = list.map(s=>{
     const d = new Date(s.timestamp);
     const dateStr = d.toLocaleDateString('pt-BR');
@@ -687,7 +740,9 @@ function exportCSV(){
     return [
       s.name, s.phone, s.email, s.cpf,
       s.amount.toFixed(2).replace('.',','),
-      paymentLabels[s.payment] || s.payment,
+      pixPortion(s).toFixed(2).replace('.',','),
+      cardPortion(s).toFixed(2).replace('.',','),
+      paymentLabel(s),
       s.seller, dateStr, timeStr
     ].map(csvEscape).join(';');
   });
@@ -716,17 +771,17 @@ document.getElementById('btnRefresh').addEventListener('click', async ()=>{
 function renderDashboard(){
   const list = filteredSales();
   const total = list.reduce((a,s)=>a+s.amount,0);
-  const pix = list.filter(s=>s.payment==='pix');
-  const cartao = list.filter(s=>s.payment!=='pix');
-  const pixTotal = pix.reduce((a,s)=>a+s.amount,0);
-  const cartaoTotal = cartao.reduce((a,s)=>a+s.amount,0);
+  const pixTotal = list.reduce((a,s)=>a+pixPortion(s),0);
+  const cartaoTotal = list.reduce((a,s)=>a+cardPortion(s),0);
+  const pixCount = list.filter(s=>pixPortion(s)>0).length;
+  const cartaoCount = list.filter(s=>cardPortion(s)>0).length;
 
   document.getElementById('statTotal').textContent = 'R$ ' + fmtBRL(total);
   document.getElementById('statTotalCount').textContent = list.length + (list.length===1?' venda':' vendas');
   document.getElementById('statPix').textContent = 'R$ ' + fmtBRL(pixTotal);
-  document.getElementById('statPixCount').textContent = pix.length + (pix.length===1?' venda':' vendas');
+  document.getElementById('statPixCount').textContent = pixCount + (pixCount===1?' venda':' vendas');
   document.getElementById('statCartao').textContent = 'R$ ' + fmtBRL(cartaoTotal);
-  document.getElementById('statCartaoCount').textContent = cartao.length + (cartao.length===1?' venda':' vendas');
+  document.getElementById('statCartaoCount').textContent = cartaoCount + (cartaoCount===1?' venda':' vendas');
 
   document.getElementById('goalTotalLabel').textContent = fmtBRL(total);
   document.getElementById('goalInput').value = goalValue;
@@ -761,10 +816,11 @@ function renderDashboard(){
   }else{
     [...list].sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp)).forEach(s=>{
       const tr = document.createElement('tr');
-      const paymentLabel = s.payment==='pix' ? 'Pix' : (s.payment==='debito'?'Débito':'Crédito');
-      const pillClass = s.payment==='pix' ? 'pix' : 'cartao';
+      const pillTitle = s.payment==='misto'
+        ? ` title="Pix: R$ ${fmtBRL(pixPortion(s))} · Cartão: R$ ${fmtBRL(cardPortion(s))}"`
+        : '';
       const time = new Date(s.timestamp).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-      tr.innerHTML = `<td>${s.name}</td><td>${s.seller}</td><td><span class="pill ${pillClass}">${paymentLabel}</span></td>
+      tr.innerHTML = `<td>${s.name}</td><td>${s.seller}</td><td><span class="pill ${paymentPillClass(s)}"${pillTitle}>${paymentLabel(s)}</span></td>
         <td>R$ ${fmtBRL(s.amount)}</td><td>${time}</td>
         <td><button class="edit-btn" data-id="${s.id}" title="Editar">✎</button> <button class="del-btn" data-id="${s.id}" title="Excluir">✕</button></td>`;
       tbody.appendChild(tr);
@@ -842,6 +898,7 @@ function renderDashboard(){
 // ---------- Form (venda) ----------
 let selectedPayment = null;
 let selectedSeller = null;
+let selectedCardType = null; // usado apenas quando o pagamento é dividido (Pix + Cartão)
 let editingId = null;
 
 function selectChoice(groupId, val){
@@ -849,6 +906,30 @@ function selectChoice(groupId, val){
     b.classList.toggle('selected', b.dataset.val===val);
   });
 }
+
+function updateSplitTotalLabel(){
+  const pix = parseFloat(document.getElementById('fPixAmount').value) || 0;
+  const card = parseFloat(document.getElementById('fCardAmount').value) || 0;
+  document.getElementById('splitTotalLabel').textContent = 'R$ ' + fmtBRL(pix + card);
+}
+
+function toggleSplitPaymentBlocks(isSplit){
+  document.getElementById('singlePaymentBlock').style.display = isSplit ? 'none' : '';
+  document.getElementById('splitPaymentBlock').style.display = isSplit ? '' : 'none';
+}
+
+document.getElementById('fSplitPayment').addEventListener('change', e=>{
+  toggleSplitPaymentBlocks(e.target.checked);
+});
+document.getElementById('fPixAmount').addEventListener('input', updateSplitTotalLabel);
+document.getElementById('fCardAmount').addEventListener('input', updateSplitTotalLabel);
+document.getElementById('cardTypeGroup').addEventListener('click', e=>{
+  const btn = e.target.closest('.choice-btn');
+  if(!btn) return;
+  document.querySelectorAll('#cardTypeGroup .choice-btn').forEach(b=>b.classList.remove('selected'));
+  btn.classList.add('selected');
+  selectedCardType = btn.dataset.val;
+});
 
 function startEdit(id){
   const sale = sales.find(s=>s.id===id);
@@ -858,11 +939,25 @@ function startEdit(id){
   document.getElementById('fPhone').value = sale.phone;
   document.getElementById('fCpf').value = sale.cpf;
   document.getElementById('fEmail').value = sale.email;
-  document.getElementById('fAmount').value = sale.amount;
-  selectedPayment = sale.payment;
   selectedSeller = sale.seller;
-  selectChoice('paymentGroup', sale.payment);
   selectChoice('sellerGroup', sale.seller);
+
+  if(sale.payment === 'misto'){
+    document.getElementById('fSplitPayment').checked = true;
+    toggleSplitPaymentBlocks(true);
+    document.getElementById('fPixAmount').value = pixPortion(sale);
+    document.getElementById('fCardAmount').value = cardPortion(sale);
+    updateSplitTotalLabel();
+    selectedCardType = sale.cardType || 'debito';
+    selectChoice('cardTypeGroup', selectedCardType);
+    selectedPayment = null;
+  } else {
+    document.getElementById('fSplitPayment').checked = false;
+    toggleSplitPaymentBlocks(false);
+    document.getElementById('fAmount').value = sale.amount;
+    selectedPayment = sale.payment;
+    selectChoice('paymentGroup', sale.payment);
+  }
 
   document.getElementById('formTitle').textContent = 'Editar venda';
   document.getElementById('formHint').textContent = 'Altere os dados e salve as mudanças';
@@ -874,9 +969,12 @@ function startEdit(id){
 }
 
 function resetForm(){
-  ['fName','fPhone','fCpf','fEmail','fAmount'].forEach(id=>document.getElementById(id).value='');
+  ['fName','fPhone','fCpf','fEmail','fAmount','fPixAmount','fCardAmount'].forEach(id=>document.getElementById(id).value='');
   document.querySelectorAll('.choice-btn').forEach(b=>b.classList.remove('selected'));
-  selectedPayment = null; selectedSeller = null; editingId = null;
+  document.getElementById('fSplitPayment').checked = false;
+  toggleSplitPaymentBlocks(false);
+  updateSplitTotalLabel();
+  selectedPayment = null; selectedSeller = null; selectedCardType = null; editingId = null;
   document.getElementById('formTitle').textContent = 'Registrar venda';
   document.getElementById('formHint').textContent = 'Preencha os dados da cliente e da venda';
   document.getElementById('submitBtn').textContent = 'Registrar venda';
@@ -927,20 +1025,46 @@ document.getElementById('submitBtn').addEventListener('click', async ()=>{
   const phone = document.getElementById('fPhone').value.trim();
   const cpf = document.getElementById('fCpf').value.trim();
   const email = document.getElementById('fEmail').value.trim();
-  const amount = parseFloat(document.getElementById('fAmount').value);
   const msg = document.getElementById('formMsg');
+  const isSplit = document.getElementById('fSplitPayment').checked;
 
-  if(!name || !phone || !cpf || !email || !amount || amount<=0 || !selectedPayment || !selectedSeller){
-    msg.textContent = 'Preencha todos os campos, incluindo pagamento e vendedora.';
+  if(!name || !phone || !cpf || !email || !selectedSeller){
+    msg.textContent = 'Preencha todos os campos, incluindo a vendedora.';
     msg.className = 'form-msg err';
     return;
+  }
+
+  let amount, payment, cardType, pixAmount, cardAmount;
+
+  if(isSplit){
+    pixAmount = parseFloat(document.getElementById('fPixAmount').value) || 0;
+    cardAmount = parseFloat(document.getElementById('fCardAmount').value) || 0;
+    amount = pixAmount + cardAmount;
+    if(pixAmount <= 0 || cardAmount <= 0 || !selectedCardType){
+      msg.textContent = 'Para pagamento dividido, informe os dois valores (maiores que zero) e o tipo do cartão.';
+      msg.className = 'form-msg err';
+      return;
+    }
+    payment = 'misto';
+    cardType = selectedCardType;
+  } else {
+    amount = parseFloat(document.getElementById('fAmount').value);
+    if(!amount || amount<=0 || !selectedPayment){
+      msg.textContent = 'Preencha o valor e a forma de pagamento.';
+      msg.className = 'form-msg err';
+      return;
+    }
+    payment = selectedPayment;
+    cardType = (payment === 'debito' || payment === 'credito') ? payment : null;
+    pixAmount = payment === 'pix' ? amount : 0;
+    cardAmount = payment === 'pix' ? 0 : amount;
   }
 
   const submitBtn = document.getElementById('submitBtn');
   submitBtn.disabled = true;
   submitBtn.textContent = 'Salvando…';
 
-  const saleFields = { name, phone, cpf, email, amount, payment: selectedPayment, seller: selectedSeller };
+  const saleFields = { name, phone, cpf, email, amount, payment, cardType, pixAmount, cardAmount, seller: selectedSeller };
 
   if(editingId){
     try{
@@ -997,10 +1121,8 @@ function renderRecent(){
     return;
   }
   list.forEach(s=>{
-    const paymentLabel = s.payment==='pix' ? 'Pix' : (s.payment==='debito'?'Débito':'Crédito');
-    const pillClass = s.payment==='pix' ? 'pix' : 'cartao';
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${s.name}</td><td>${s.seller}</td><td><span class="pill ${pillClass}">${paymentLabel}</span></td><td>R$ ${fmtBRL(s.amount)}</td>`;
+    tr.innerHTML = `<td>${s.name}</td><td>${s.seller}</td><td><span class="pill ${paymentPillClass(s)}">${paymentLabel(s)}</span></td><td>R$ ${fmtBRL(s.amount)}</td>`;
     tbody.appendChild(tr);
   });
 }
